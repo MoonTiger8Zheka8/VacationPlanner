@@ -1,0 +1,84 @@
+@using VacationPlanner.Domain.Models
+@using VacationPlanner.Components.Shared
+
+<div class="card h-100 shadow-sm place-card @(IsSelected ? "border border-primary" : "")"
+     role="button"
+     @onclick="OnCardClicked">
+    <img src="@ImageSrc"
+         class="card-img-top"
+         style="height: 180px; object-fit: cover;"
+         alt="@Place.Name"
+         @onerror="OnImageError" />
+
+    <div class="card-body d-flex flex-column">
+        <h6 class="card-title mb-2">@Place.Name</h6>
+
+        @if (!string.IsNullOrWhiteSpace(Place.Description))
+        {
+            <p class="card-text text-muted" style="font-size: 0.95rem;">
+                @Place.Description
+            </p>
+        }
+
+        <div class="mt-auto d-flex gap-2">
+            @if (ShowMapButton)
+            {
+                <button class="btn btn-outline-primary btn-sm"
+                        @onclick="OnShowOnMapClicked"
+                        disabled="@(!HasCoordinates)">
+                    🗺 Показати на мапі
+                </button>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(Place.Address))
+            {
+                <span class="badge text-bg-secondary align-self-center">
+                    📍 @Place.Address
+                </span>
+            }
+        </div>
+
+        @if (!HasCoordinates)
+        {
+            <small class="text-muted mt-2">Координати недоступні</small>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public bool IsSelected { get; set; }
+    [Parameter, EditorRequired] public PlaceInfo Place { get; set; } = default!;
+
+    [Parameter] public bool ShowMapButton { get; set; } = true;
+
+    [Parameter] public EventCallback<PlaceInfo> OnShowOnMap { get; set; }
+
+    private string ImageSrc { get; set; } = "";
+
+    private bool HasCoordinates => Place.Lat.HasValue && Place.Lon.HasValue;
+
+    protected override void OnParametersSet()
+    {
+        // якщо фото з Wikipedia не прийшло — fallback
+        ImageSrc = string.IsNullOrWhiteSpace(Place.ImageUrl)
+            ? "/images/placeholders/place.jpg"
+            : Place.ImageUrl;
+    }
+
+    private void OnImageError()
+    {
+        // якщо фото 404 — fallback
+        ImageSrc = "/images/placeholders/place.jpg";
+        StateHasChanged();
+    }
+    private async Task OnCardClicked()
+    {
+        if (OnShowOnMap.HasDelegate)
+            await OnShowOnMap.InvokeAsync(Place);
+    }
+    private async Task OnShowOnMapClicked()
+    {
+        if (OnShowOnMap.HasDelegate)
+            await OnShowOnMap.InvokeAsync(Place);
+    }
+}

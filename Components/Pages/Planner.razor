@@ -1,0 +1,284 @@
+@page "/planner"
+@rendermode InteractiveServer
+@inject VacationPlanner.Application.Interfaces.IVacationPlannerService PlannerService
+@inject IJSRuntime JS
+@implements IDisposable
+
+@using VacationPlanner.Domain.Enums
+@using VacationPlanner.Domain.Models
+@using VacationPlanner.Components.Shared
+<h3>Планування відпустки</h3>
+
+<div class="card p-3 mb-3">
+    
+    <div class="mb-3">
+    <label class="form-label">Місце</label>
+
+    <div class="input-group">
+        <input class="form-control" @bind="request.Destination" />
+        <button class="btn btn-outline-secondary" type="button" title="Голосовий ввід"
+                @onclick="@(() => StartVoiceFor("destination"))">
+            🎤
+        </button>
+    </div>
+</div>
+
+<div class="mb-3">
+    <label class="form-label">Кількість днів</label>
+
+    <div class="input-group">
+        <input type="number" class="form-control" @bind="request.Days" />
+        <button class="btn btn-outline-secondary" type="button" title="Голосовий ввід"
+                @onclick="@(() => StartVoiceFor("days"))">
+            🎤
+        </button>
+    </div>
+</div>
+
+<div class="mb-3">
+    <label class="form-label">Тип поїздки</label>
+
+    <div class="input-group">
+        <select class="form-select" @bind="request.Type">
+            <option value="Excursions">Екскурсії, цікаві місця</option>
+            <option value="Active">Активний відпочинок</option>
+            <option value="Relax">Релакс, спокійний відпочинок</option>
+        </select>
+
+        <button class="btn btn-outline-secondary" type="button" title="Голосовий ввід"
+                @onclick="@(() => StartVoiceFor("type"))">
+            🎤
+        </button>
+    </div>
+</div>
+    <button class="btn btn-primary mt-2" @onclick="Generate">
+        ЗГЕНЕРУВАТИ ПЛАН
+    </button>
+</div>
+
+@if (plan is not null)
+{
+    <h4>Результат</h4>
+
+    //<p><b>Оціночна вартість:</b> @plan.TotalEstimatedCost грн</p>
+
+    @foreach (var day in plan.Days)
+    {
+        <div class="card p-3 mb-2">
+            <h5>@day.Title</h5>
+            
+
+            <div class="row g-3">
+            @foreach (var place in day.Places)
+            {
+                <div class="col-md-6 col-lg-4">
+                    <PlaceCard Place="place"
+                        IsSelected="@(selectedPlaceId == place.Id)"
+                        OnShowOnMap="ShowPlaceOnMap" />
+                </div>
+            }
+</div>
+        </div>
+    }
+}
+@if (plan is not null)
+{
+    <div class="card p-3 mb-3">
+        <h5>Карта маршруту</h5>
+        <div id="map" style="height: 400px;"></div>
+    </div>
+}
+
+@code {
+    private bool mapRendered = false;
+    private VacationRequest request = new()
+    {
+        Destination = "Львів",
+        Days = 3,
+        Budget = 10000,
+        People = 1,
+        Type = VacationType.Excursions
+    };
+
+    private VacationPlan? plan;
+
+    private async Task Generate()
+    {
+        mapRendered = false;
+        plan = await PlannerService.GeneratePlanAsync(request);
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (plan is not null && !mapRendered)
+            await RenderMap();
+    }
+
+    private async Task RenderMap()
+    {
+        // захист від повторних рендерів
+        if (mapRendered) return;
+        mapRendered = true;
+
+        if (plan?.Days == null || plan.Days.Count == 0)
+            return;
+
+        // перша точка з координатами
+        var first = plan.Days
+            .OrderBy(d => d.DayNumber)
+            .SelectMany(d => d.Places)
+            .FirstOrDefault(p => p.Lat.HasValue && p.Lon.HasValue);
+
+        if (first is null)
+            return;
+
+        // init карта
+        await JS.InvokeVoidAsync("leafletMap.init", "map", first.Lat!.Value, first.Lon!.Value, 12);
+
+        // точки в порядку
+        var orderedPlaces = plan.Days
+            .OrderBy(d => d.DayNumber)
+            .SelectMany(d => d.Places)
+            .Where(p => p.Lat.HasValue && p.Lon.HasValue)
+            .ToList();
+
+        
+        if (orderedPlaces.Count == 0)
+            return;
+
+        //  markers
+        int order = 1;
+        foreach (var place in orderedPlaces)
+        {
+            await JS.InvokeVoidAsync(
+                "leafletMap.addNumberedMarker",
+                place.Id,                 
+                order,                    
+                place.Lat!.Value,
+                place.Lon!.Value,
+                place.Name
+            );
+
+            order++;
+        }
+
+        
+        await JS.InvokeVoidAsync("leafletMap.drawRoute");
+
+        
+        await JS.InvokeVoidAsync("leafletMap.fitBounds");
+    }
+    private string? selectedPlaceId;
+    private async Task ShowPlaceOnMap(PlaceInfo place)
+    {
+        selectedPlaceId = place.Id;
+        await JS.InvokeVoidAsync("leafletMap.selectPlace", place.Id);
+    }
+    private DotNetObjectReference<Planner>? objRef;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender)
+        {
+            objRef = DotNetObjectReference.Create(this);
+        }
+    }
+
+    private async Task StartVoiceFor(string targetField)
+    {
+        objRef ??= DotNetObjectReference.Create(this);
+
+        await JS.InvokeVoidAsync("voiceAssistant.startRecognition", objRef, targetField);
+    }
+
+    [JSInvokable]
+    public void OnSpeechRecognized(string text, string targetField)
+    {
+        text = text.Trim();
+
+        switch (targetField)
+        {
+            case "destination":
+                request.Destination = ToTitle(text);
+                break;
+
+            case "days":
+                if (TryParseUkrainianNumber(text, out var days))
+                    request.Days = days;
+                break;
+
+            case "type":
+                if (TryParseVacationType(text, out var type))
+                    request.Type = type;
+                break;
+        }
+
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public void OnSpeechError(string error, string targetField)
+    {
+        Console.WriteLine($"Voice error ({targetField}): {error}");
+    }
+
+    private static string ToTitle(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "";
+        return char.ToUpper(text[0]) + text.Substring(1);
+    }
+
+    private static bool TryParseVacationType(string text, out VacationPlanner.Domain.Enums.VacationType type)
+    {
+        var t = text.ToLowerInvariant();
+
+        if (t.Contains("екскурс")) { type = VacationPlanner.Domain.Enums.VacationType.Excursions; return true; }
+        if (t.Contains("актив")) { type = VacationPlanner.Domain.Enums.VacationType.Active; return true; }
+        if (t.Contains("релакс") || t.Contains("відпоч") || t.Contains("спокій")) { type = VacationPlanner.Domain.Enums.VacationType.Relax; return true; }
+        if (t.Contains("пляж") || t.Contains("море")) { type = VacationPlanner.Domain.Enums.VacationType.Beach; return true; }
+
+        // fallback
+        type = VacationPlanner.Domain.Enums.VacationType.Relax;
+        return false;
+    }
+
+    private static bool TryParseUkrainianNumber(string text, out int number)
+    {
+        var t = text.Trim().ToLowerInvariant();
+
+        
+        if (int.TryParse(new string(t.Where(char.IsDigit).ToArray()), out number))
+            return number > 0;
+
+        // слова
+        var map = new Dictionary<string, int>
+        {
+            ["один"] = 1, ["одна"] = 1, ["перший"] = 1,
+            ["два"] = 2, ["дві"] = 2, ["другий"] = 2,
+            ["три"] = 3, ["третій"] = 3,
+            ["чотири"] = 4,
+            ["п'ять"] = 5, ["пять"] = 5,
+            ["шість"] = 6,
+            ["сім"] = 7,
+            ["вісім"] = 8,
+            ["дев'ять"] = 9, ["девять"] = 9,
+            ["десять"] = 10
+        };
+
+        foreach (var kv in map)
+        {
+            if (t.Contains(kv.Key))
+            {
+                number = kv.Value;
+                return true;
+            }
+        }
+
+        number = 0;
+        return false;
+    }
+
+    public void Dispose()
+    {
+        objRef?.Dispose();
+    }   
+}

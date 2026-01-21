@@ -1,0 +1,125 @@
+@page "/assistant"
+@rendermode InteractiveServer
+@implements IDisposable
+
+@inject IJSRuntime JS
+@inject VacationPlanner.Application.Interfaces.IVoiceCommandParser Parser
+@inject VacationPlanner.Application.Interfaces.IVacationPlannerService PlannerService
+
+@using VacationPlanner.Domain.Models
+@using VacationPlanner.Components.Shared
+<h3>Мультимедійний голосовий помічник</h3>
+
+<div class="card p-3 mb-3">
+    <div class="d-flex gap-2">
+        <button class="btn btn-primary" @onclick="StartVoice">
+            🎤 Сказати запит
+        </button>
+
+        <button class="btn btn-success" @onclick="SpeakPlan" disabled="@(plan is null)">
+            🔊 Озвучити план
+        </button>
+    </div>
+
+    <p class="mt-3 mb-0"><b>Розпізнаний текст:</b> @recognizedText</p>
+</div>
+
+@if (request is not null)
+{
+    <div class="card p-3 mb-3">
+        <h5>Розпізнані параметри</h5>
+        <ul class="mb-0">
+            <li><b>Місце:</b> @request.Destination</li>
+            <li><b>К-ть днів:</b> @request.Days</li>
+            <li><b>Бюджет:</b> @request.Budget грн</li>
+            <li><b>Людей:</b> @request.People</li>
+            <li><b>Тип:</b> @request.Type</li>
+        </ul>
+    </div>
+}
+
+@if (plan is not null)
+{
+    <h4>Згенерований план</h4>
+
+    <p><b>Загальна оціночна вартість:</b> @plan.TotalEstimatedCost грн</p>
+
+    @foreach (var day in plan.Days)
+    {
+        <div class="card p-3 mb-2">
+            <h5>@day.Title</h5>
+            <p><b>Оціночні витрати:</b> @day.EstimatedCost грн</p>
+
+            <div class="row g-3">
+                @foreach (var place in day.Places)
+                {
+                    <div class="col-md-6 col-lg-4">
+                        <PlaceCard Place="place" ShowMapButton="false" />
+                    </div>
+                }
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private string recognizedText = "";
+
+    private VacationRequest? request;
+    private VacationPlan? plan;
+
+    private DotNetObjectReference<Assistant>? objRef;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender)
+        {
+            objRef = DotNetObjectReference.Create(this);
+        }
+    }
+
+    private async Task StartVoice()
+    {
+        if (objRef is null)
+            objRef = DotNetObjectReference.Create(this);
+
+        await JS.InvokeVoidAsync("voiceAssistant.startRecognition", objRef);
+    }
+
+    [JSInvokable]
+    public async Task OnSpeechRecognized(string text)
+{
+    recognizedText = text;
+
+    request = Parser.Parse(recognizedText);
+    plan = await PlannerService.GeneratePlanAsync(request);
+
+    StateHasChanged();
+}
+
+    private async Task SpeakPlan()
+    {
+        if (plan is null) return;
+
+        // Короткий підсумок
+        var speech = $"Я створив план відпустки у {plan.Request.Destination} на {plan.Request.Days} днів. " +
+                     $"Оціночний бюджет {plan.TotalEstimatedCost} гривень. ";
+
+        //
+        foreach (var day in plan.Days)
+            speech += $"{day.Title}. ";
+
+        await JS.InvokeVoidAsync("voiceAssistant.speak", speech);
+    }
+    private async Task ShowPlaceOnMap(VacationPlanner.Domain.Models.PlaceInfo place)
+    {
+        if (place.Lat is null || place.Lon is null) return;
+
+        await JS.InvokeVoidAsync("leafletMap.panTo", place.Lat.Value, place.Lon.Value, place.Name);
+    }
+
+    public void Dispose()
+    {
+        objRef?.Dispose();
+    }
+}
